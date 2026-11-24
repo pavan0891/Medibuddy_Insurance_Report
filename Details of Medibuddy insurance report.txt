@@ -1,0 +1,126 @@
+The two Excel files join one-to-one on Policy no. (1,338 policies, no missing values or duplicates). Your Workflow file says read_csv and concat, but your files are Excel and need a join on the key, so I used read_excel and merge. In Power BI the equivalent is Merge Queries, not Append.
+
+What the data says
+
+#	Question	Answer
+1	Gender?	It barely matters. Males average ₹13,957 vs ₹12,570 for females, but the medians are the same (about ₹9,400). The gap comes from more male smokers, so don't use gender as a constraint.
+2	Average spend per policy	Mean ₹13,270, median ₹9,382. Non-smokers average ₹8,434 and smokers ₹32,050.
+3	Regional policies?	Not needed. Southeast is highest (₹14,735), but only because it has more smokers and higher BMI.
+4	Dependents?	A weak effect. Families with 2–3 children cost a bit more, and the 4–5 children groups are too small to trust.
+5	BMI?	It is useful mainly for smokers. Obese smokers average ₹41,558, against ₹19,942 for normal-BMI smokers. For non-smokers BMI hardly matters.
+6	Smoker status?	Yes, it is the biggest driver. Smokers are 20% of policies but 49% of total spend.
+7	Age?	Cost rises steadily with age, from ₹9,087 (18–25) to ₹18,796 (56–64). It works as a graded loading, not a cut-off.
+8	BMI discounts?	Only for non-smokers. A 5% discount on normal-BMI non-smokers costs about ₹67k (0.4% of spend), and 10% costs about ₹134k (0.8%).
+
+My recommendation is to price on smoker × BMI × age band rather than on gender or region.
+
+Machine learning model
+
+I split the data 80/20, used 5-fold cross-validation, and added features driven by the analysis (smoker×BMI, obesity flag, age²). I then tuned Gradient Boosting and Random Forest with randomised search.
+
+Every reasonable model plateaus at about 0.84 R² on the test set (about 0.87 in cross-validation), with a typical error of about ₹2,700. Tuning helped only slightly, and a plain linear model with the engineered features scored about the same. I can't honestly promise higher accuracy from these six fields, because the remaining error most likely comes from things not in the data, such as diagnoses.
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Why your data differs from the picture
+Your test_predictions.csv has 268 rows with only actual, predicted and residual. It gives R² 0.879, MAE ₹2,469, RMSE ₹4,335. The picture shows R² 0.836, MAE ₹2,748 and RMSE ₹5,092. They came from different train/test splits, so both are legitimate, but they aren't the same model run.
+The file has no Policy no. or smoker/region columns, so slicers can't filter it yet. To fix that, match each prediction back to its policy using the charge amount. All 268 rows match medibuddy_merged.csv. One charge value (₹1,639.5631) belongs to two policies, but both are identical in age, sex, BMI, children, smoker and region, so the match is safe.
+Step 1: Add Policy no. to test_predictions
+Home → Transform data. Check that charges in INR in medibuddy_merged is typed Decimal number and that actual in test_predictions is also Decimal number.
+Select the test_predictions query → Home → Merge Queries.
+In the dialog, choose medibuddy_merged as the second table, click actual in the top table and charges in INR in the bottom one. Join kind: Left Outer. OK.
+Click the expand icon on the new column, untick everything except Policy no., untick "Use original column name as prefix", OK.
+Right-click the actual column header → Remove Duplicates. This drops the duplicate row caused by the twin policies, leaving 268 rows.
+Close & Apply.
+
+(If the merge gives fewer matches than expected, round actual and charges in INR to 4 decimals in both queries and merge on the rounded columns.)
+
+Step 2: Create the relationship
+
+Model view → drag Policy no. from test_predictions onto Policy no. in medibuddy_merged. Set cardinality to One to one and cross-filter direction to Both, then save.
+
+Now slicers from medibuddy_merged (smoker, region, sex, BMI Category, Age Group) filter the ML visuals too.
+
+Step 3: Measures (from your file)
+
+Create each as a separate measure:
+
+Model R2 =
+VAR m = AVERAGE ( test_predictions[actual] )
+RETURN 1 - DIVIDE (
+    SUMX ( test_predictions, ( test_predictions[actual] - test_predictions[predicted] ) ^ 2 ),
+    SUMX ( test_predictions, ( test_predictions[actual] - m ) ^ 2 ) )
+Model MAE = AVERAGEX ( test_predictions, ABS ( test_predictions[residual] ) )
+Model RMSE = SQRT ( AVERAGEX ( test_predictions, test_predictions[residual] ^ 2 ) )
+
+With no filters you should see 0.879, 2,469 and 4,335. If you do, the cards are correct.
+
+Step 4: The interactive visuals
+Cards: Model R2, Model MAE, Model RMSE.
+Actual vs predicted: Scatter chart, X = actual, Y = predicted, Values = Policy no. (all Don't summarize).
+Residuals: Scatter chart, X = predicted, Y = residual, Values = Policy no.. In the Analytics pane add a Y-axis constant line at 0.
+Slicers: from medibuddy_merged, add smoker, region, BMI Category and Age Group.
+---------------------------------------------------------------------------------------------------------------------------------
+The easiest approach is to use a Histogram (Clustered Column Chart) with Analytics reference lines.
+Step 1. Create Mean and Median DAX measures
+Open Power BI Desktop and go to Modeling → New Measure.
+
+Mean Charges
+Mean Charges =
+AVERAGE(InsuranceData[charges in INR])
+
+
+Median Charges
+Median Charges =
+MEDIAN(InsuranceData[charges in INR])
+
+
+Expected results from your dataset:
+Measure	Value
+Mean Charges	₹13,270.42
+Median Charges	₹9,382.03
+
+Step 2. Create charge bins for the histogram
+1. Go to the Data or Report view.
+2. In the Fields pane, right-click InsuranceData[charges in INR].
+3. Select New group.
+4. Set Group type to Bin.
+5. Set Bin type to Size of bins.
+6. Enter 2000 as the bin size.
+7. Click OK.
+Power BI creates a new field, typically named charges in INR (bins).
+Step 3. Create the histogram
+1. Go to Report View.
+2. Select Clustered Column Chart.
+3. Drag the following fields:
+Field well	Column
+X-axis	charges in INR (bins)
+Y-axis	Policy no.
+Aggregation	Count
+
+4. In the Format visual pane, set the X-axis to Continuous if Power BI supports it for your bin field; otherwise use Categorical.
+5. Set the bar color to blue.
+6. Set the chart title to Distribution of Insurance Charges (Right-Skewed).
+You should see many high bars on the left and a long tail toward the right.
+Step 4. Add Mean and Median vertical lines
+This is the important part.
+
+Power BI's native Analytics pane does not consistently support dynamic vertical X-axis reference lines for binned clustered column charts. In particular, a categorical bin axis cannot position lines at the exact numerical values of ₹13,270 and ₹9,382.
+
+Business insight: The insurance charges distribution is positively (right) skewed. The mean charge (₹13,270) is considerably higher than the median charge (₹9,382), indicating that a relatively small number of high-charge policies increase the overall average.
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Final business recommendations
+Area	Recommendation
+Gender	Do not use gender differences alone to restrict coverage
+Average charges	Use ₹13,270 as a descriptive benchmark, alongside the median
+Region	Investigate regional differences before designing separate policies
+Dependents	Treat the number of children as a secondary factor
+BMI	Evaluate alongside age, smoking and other health indicators
+Smoking	Prioritize smoking-related risk analysis and wellness programs
+Age	Include age in predictive analysis without automatically restricting eligibility
+Discounts	Test voluntary, clinically supported wellness incentives rather than BMI-only discounts
+
+7. Important model validation considerations
+The notebook uses cross-validation for model selection and an untouched test set for final evaluation. To strengthen the project further before business deployment, evaluate prediction errors separately across age groups, genders, regions, BMI categories and smoking status.
+
+Also consider testing the model on a newer, independent insurance dataset. This dataset contains no policy dates, so temporal validation cannot currently be performed.
+
+Overall conclusion: Smoking status, age and BMI are the most useful predictive variables in this dataset. The tuned Random Forest achieved a test R² of 0.879, making it a strong starting point for an insurance charge prediction project. However, predictive relationships should not automatically be converted into policy restrictions or pricing decisions without further validation.
